@@ -1,0 +1,167 @@
+{
+  "$comment": "Tiny hand-written fixture for JsonFlightRepository tests.",
+  "version": 1,
+  "seed": 1,
+  "generatedAt": "2029-12-01T00:00:00.000Z",
+  "baseDate": "2030-01-01",
+  "horizonDays": 3,
+  "defaultCurrency": "USD",
+  "airports": [
+    {
+      "iata": "LHR",
+      "name": "Heathrow",
+      "city": "London",
+      "country": "United Kingdom",
+      "timeZone": "Europe/London"
+    },
+    {
+      "iata": "JFK",
+      "name": "John F. Kennedy",
+      "city": "New York",
+      "country": "United States",
+      "timeZone": "America/New_York"
+    }
+  ],
+  "airlines": [
+    { "iata": "BA", "name": "British Airways" },
+    { "iata": "VS", "name": "Virgin Atlantic" }
+  ],
+  "offers": [
+    {
+      "id": "off_TEST0001",
+      "owner": { "iata": "BA", "name": "British Airways" },
+      "cabinClass": "economy",
+      "totalAmount": "420.00",
+      "totalCurrency": "USD",
+      "seatsAvailable": 4,
+      "refundable": false,
+      "baggageIncluded": 1,
+      "expiresAt": "2029-12-31T08:00:00.000Z",
+      "slices": [
+        {
+          "id": "off_TEST0001_sli_1",
+          "origin": "LHR",
+          "destination": "JFK",
+          "departingAt": "2030-01-01T09:00:00+00:00",
+          "arrivingAt": "2030-01-01T12:00:00-05:00",
+          "durationMinutes": 480,
+          "segments": [
+            {
+              "id": "off_TEST0001_seg_1",
+              "marketingCarrier": { "iata": "BA", "name": "British Airways" },
+              "flightNumber": "BA117",
+              "aircraft": "Boeing 777-300ER",
+              "origin": "LHR",
+              "destination": "JFK",
+              "departingAt": "2030-01-01T09:00:00+00:00",
+              "arrivingAt": "2030-01-01T12:00:00-05:00",
+              "durationMinutes": 480
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "off_TEST0002",
+      "owner": { "iata": "VS", "name": "Virgin Atlantic" },
+      "cabinClass": "economy",
+      "totalAmount": "380.00",
+      "totalCurrency": "USD",
+      "seatsAvailable": 1,
+      "refundable": false,
+      "baggageIncluded": 0,
+      "expiresAt": "2029-12-31T08:00:00.000Z",
+      "slices": [
+        {
+          "id": "off_TEST0002_sli_1",
+          "origin": "LHR",
+          "destination": "JFK",
+          "departingAt": "2030-01-01T14:00:00+00:00",
+          "arrivingAt": "2030-01-01T17:10:00-05:00",
+          "durationMinutes": 490,
+          "segments": [
+            {
+              "id": "off_TEST0002_seg_1",
+              "marketingCarrier": { "iata": "VS", "name": "Virgin Atlantic" },
+              "flightNumber": "VS3",
+              "aircraft": "Airbus A350-900",
+              "origin": "LHR",
+              "destination": "JFK",
+              "departingAt": "2030-01-01T14:00:00+00:00",
+              "arrivingAt": "2030-01-01T17:10:00-05:00",
+              "durationMinutes": 490
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "off_TEST0003",
+      "owner": { "iata": "BA", "name": "British Airways" },
+      "cabinClass": "business",
+      "totalAmount": "1850.00",
+      "totalCurrency": "USD",
+      "seatsAvailable": 6,
+      "refundable": true,
+      "baggageIncluded": 2,
+      "expiresAt": "2029-12-31T08:00:00.000Z",
+      "slices": [
+        {
+          "id": "off_TEST0003_sli_1",
+          "origin": "LHR",
+          "destination": "JFK",
+          "departingAt": "2030-01-02T11:00:00+00:00",
+          "arrivingAt": "2030-01-02T14:05:00-05:00",
+          "durationMinutes": 485,
+          "segments": [
+            {
+              "id": "off_TEST0003_seg_1",
+              "marketingCarrier": { "iata": "BA", "name": "British Airways" },
+              "flightNumber": "BA179",
+              "aircraft": "Boeing 787-9",
+              "origin": "LHR",
+              "destination": "JFK",
+              "departingAt": "2030-01-02T11:00:00+00:00",
+              "arrivingAt": "2030-01-02T14:05:00-05:00",
+              "durationMinutes": 485
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "off_TEST0004",
+      "owner": { "iata": "VS", "name": "Virgin Atlantic" },
+      "cabinClass": "economy",
+      "totalAmount": "455.00",
+      "totalCurrency": "USD",
+      "seatsAvailable": 3,
+      "refundable": false,
+      "baggageIncluded": 1,
+      "expiresAt": "2029-12-31T08:00:00.000Z",
+      "slices": [
+        {
+          "id": "off_TEST0004_sli_1",
+          "origin": "JFK",
+          "destination": "LHR",
+          "departingAt": "2030-01-03T18:30:00-05:00",
+          "arrivingAt": "2030-01-04T06:25:00+00:00",
+          "durationMinutes": 415,
+          "segments": [
+            {
+              "id": "off_TEST0004_seg_1",
+              "marketingCarrier": { "iata": "VS", "name": "Virgin Atlantic" },
+              "flightNumber": "VS26",
+              "aircraft": "Airbus A330-300",
+              "origin": "JFK",
+              "destination": "LHR",
+              "departingAt": "2030-01-03T18:30:00-05:00",
+              "arrivingAt": "2030-01-04T06:25:00+00:00",
+              "durationMinutes": 415
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+# On Docker Desktop, a LoadBalancer Service is published on localhost, so the
+# chat UI is reachable at http://localhost once the pods are ready.
+apiVersion: v1
+kind: Service
+metadata:
+  name: chat-assistant
+  namespace: travel-agent
+  labels:
+    app.kubernetes.io/name: chat-assistant
+    app.kubernetes.io/component: frontend
+    app.kubernetes.io/part-of: travel-agent
+spec:
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/name: chat-assistant
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP

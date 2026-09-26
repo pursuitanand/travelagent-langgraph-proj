@@ -1,0 +1,33 @@
+# dependencies
+node_modules/
+.pnp/
+.pnp.js
+
+# build output
+dist/
+build/
+*.tsbuildinfo
+
+# test / coverage
+coverage/
+.vitest/
+
+# env & secrets  (NEVER commit real credentials)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+k8s/secret.yaml
+
+# logs
+logs/
+*.log
+npm-debug.log*
+
+# editors / os
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json

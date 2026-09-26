@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: travel-agent
+
+# Apply everything with:  kubectl apply -k k8s/
+# (the Secret is intentionally not listed - create it out-of-band, see
+#  11-backend-secret.example.yaml)
+resources:
+  - 00-namespace.yaml
+  - 10-backend-config.yaml
+  - 12-backend-deployment.yaml
+  - 13-backend-service.yaml
+  - 20-frontend-config.yaml
+  - 21-frontend-deployment.yaml
+  - 22-frontend-service.yaml
+
+# Every manifest already carries app.kubernetes.io/* labels; no kustomize-level
+# label injection, which would also rewrite the immutable pod selectors.

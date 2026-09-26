@@ -1,0 +1,21 @@
+# Internal only. The browser never reaches this service; chat-assistant calls
+# it server-side at:
+#   http://langgraph-travel-agent.travel-agent.svc.cluster.local:8080
+apiVersion: v1
+kind: Service
+metadata:
+  name: langgraph-travel-agent
+  namespace: travel-agent
+  labels:
+    app.kubernetes.io/name: langgraph-travel-agent
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: travel-agent
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: langgraph-travel-agent
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP

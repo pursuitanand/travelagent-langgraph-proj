@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Chat with a LangGraph travel planning agent." />
+    <title>Travel Agent</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#9992;</text></svg>" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="header">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">✈</span>
+          <div>
+            <h1>Travel Agent</h1>
+            <p class="subtitle">Flight search + web research, planned by a LangGraph agent</p>
+          </div>
+        </div>
+        <div class="status" id="status" role="status" aria-live="polite">
+          <span class="dot" id="status-dot"></span>
+          <span id="status-text">checking…</span>
+        </div>
+      </header>
+
+      <main class="chat" id="chat" aria-label="Conversation">
+        <div class="message assistant">
+          <div class="avatar" aria-hidden="true">✈</div>
+          <div class="bubble">
+            <p>
+              Hello. Tell me where you want to go and I will look up flights and
+              anything else worth knowing.
+            </p>
+            <div class="suggestions" id="suggestions">
+              <button type="button" class="chip" data-prompt="Find me a flight from London to Tokyo on 20 October for 2 people in business class">London → Tokyo, business</button>
+              <button type="button" class="chip" data-prompt="Cheap flights from New York to San Francisco next friday under $400">NYC → SF, under $400</button>
+              <button type="button" class="chip" data-prompt="Amsterdam to Barcelona in 2 weeks for a week, and what are the best things to do there?">Amsterdam → Barcelona + tips</button>
+              <button type="button" class="chip" data-prompt="Mumbai to Dubai on 5 October returning 12 October, 2 adults">Mumbai → Dubai return</button>
+            </div>
+          </div>
+        </div>
+      </main>
+
+      <form class="composer" id="composer" autocomplete="off">
+        <label class="sr-only" for="input">Your message</label>
+        <textarea
+          id="input"
+          name="message"
+          rows="1"
+          maxlength="2000"
+          placeholder="e.g. London to Tokyo on 20 October for 2 people"
+          required
+        ></textarea>
+        <button type="submit" id="send" aria-label="Send message">
+          <span class="send-label">Send</span>
+        </button>
+      </form>
+      <p class="footnote">
+        Flight data is a synthetic Duffel-shaped dataset. API keys stay on the backend.
+      </p>
+    </div>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

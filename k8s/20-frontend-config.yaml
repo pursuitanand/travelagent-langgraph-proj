@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: chat-assistant-config
+  namespace: travel-agent
+  labels:
+    app.kubernetes.io/name: chat-assistant
+    app.kubernetes.io/part-of: travel-agent
+data:
+  NODE_ENV: "production"
+  PORT: "3000"
+  LOG_LEVEL: "info"
+
+  # Kubernetes service DNS - NOT localhost. The two services run in separate
+  # pods, so the frontend resolves the backend through the cluster DNS name.
+  BACKEND_URL: "http://langgraph-travel-agent.travel-agent.svc.cluster.local:8080"
+  BACKEND_TIMEOUT_MS: "60000"

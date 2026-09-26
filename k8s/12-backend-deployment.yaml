@@ -1,0 +1,98 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: langgraph-travel-agent
+  namespace: travel-agent
+  labels:
+    app.kubernetes.io/name: langgraph-travel-agent
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: travel-agent
+spec:
+  replicas: 2
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: langgraph-travel-agent
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: langgraph-travel-agent
+        app.kubernetes.io/component: backend
+        app.kubernetes.io/part-of: travel-agent
+    spec:
+      # Give in-flight LangGraph runs time to finish on a rolling update.
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: agent
+          image: langgraph-travel-agent:local
+          # Docker Desktop shares its image store with the cluster, so a
+          # locally built tag is found without a registry push.
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: langgraph-travel-agent-config
+            - secretRef:
+                name: langgraph-travel-agent-secrets
+                # Missing secret => no web search, template replies, still up.
+                optional: true
+          env:
+            - name: SERVICE_VERSION
+              value: "1.0.0"
+          # Loading the seeded dataset takes a moment; the startup probe covers
+          # it so a slow boot is never mistaken for a liveness failure.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 192Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            # readOnlyRootFilesystem is on, so give Node a writable scratch dir.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

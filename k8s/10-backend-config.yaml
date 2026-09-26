@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: langgraph-travel-agent-config
+  namespace: travel-agent
+  labels:
+    app.kubernetes.io/name: langgraph-travel-agent
+    app.kubernetes.io/part-of: travel-agent
+data:
+  NODE_ENV: "production"
+  PORT: "8080"
+  LOG_LEVEL: "info"
+
+  # The browser only ever talks to chat-assistant, which proxies server-side,
+  # so the agent does not need to allow any browser origin.
+  CORS_ALLOWED_ORIGINS: "*"
+
+  # json     -> bundled data/flights.json
+  # postgres -> needs DATABASE_URL in the Secret + db/schema.sql applied
+  # duffel   -> needs DUFFEL_ACCESS_TOKEN in the Secret
+  FLIGHT_REPOSITORY: "json"
+  FLIGHTS_DATA_FILE: "data/flights.json"
+  FLIGHTS_ROLL_DATES: "true"
+
+  # Duffel tuning. Only read when FLIGHT_REPOSITORY=duffel; the token itself
+  # lives in the Secret, never here.
+  DUFFEL_ENDPOINT: "https://api.duffel.com"
+  DUFFEL_API_VERSION: "v2"
+  DUFFEL_TIMEOUT_MS: "25000"
+  DUFFEL_SUPPLIER_TIMEOUT_MS: "20000"
+  DUFFEL_MAX_CONNECTIONS: "1"
+  DUFFEL_MAX_FLEXIBILITY_REQUESTS: "2"
+  DUFFEL_HEALTH_CACHE_MS: "60000"
+
+  SERPER_ENDPOINT: "https://google.serper.dev/search"
+  SERPER_TIMEOUT_MS: "6000"
+  SERPER_MAX_RESULTS: "5"
+
+  ANTHROPIC_MODEL: "claude-opus-5"
+  ANTHROPIC_MAX_TOKENS: "8000"
+  ANTHROPIC_EFFORT: "low"
+  ANTHROPIC_TIMEOUT_MS: "45000"

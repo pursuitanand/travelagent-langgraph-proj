@@ -1,0 +1,137 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# Superseded runs on the same branch are pointless once a newer commit lands.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # checkout -> install -> lint -> test -> build -> docker build
+  # Runs once per service, in parallel.
+  # ---------------------------------------------------------------------------
+  service:
+    name: ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: langgraph-travel-agent
+            port: 8080
+          - service: chat-assistant
+            port: 3000
+
+    defaults:
+      run:
+        working-directory: services/${{ matrix.service }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: services/${{ matrix.service }}/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker build
+        uses: docker/build-push-action@v6
+        with:
+          context: services/${{ matrix.service }}
+          file: services/${{ matrix.service }}/Dockerfile
+          tags: ${{ matrix.service }}:${{ github.sha }}
+          # No registry credentials and no cloud deploy yet - build only.
+          push: false
+          load: true
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+      # Proves the image actually boots with no secrets present, which is how
+      # it is first deployed to the cluster.
+      - name: Smoke-test the image
+        working-directory: .
+        env:
+          PORT: ${{ matrix.port }}
+        run: |
+          container=smoke-${{ matrix.service }}
+          docker run --rm --name "$container" -d -p "$PORT:$PORT" \
+            "${{ matrix.service }}:${{ github.sha }}"
+
+          for _ in $(seq 1 30); do
+            if curl -fsS "http://localhost:$PORT/health" > /dev/null; then
+              echo "health check passed"
+              docker stop "$container" > /dev/null
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "::error::container never became healthy"
+          docker logs "$container" || true
+          docker stop "$container" || true
+          exit 1
+
+  # ---------------------------------------------------------------------------
+  # Static validation of the Kubernetes manifests (no cluster involved).
+  # ---------------------------------------------------------------------------
+  manifests:
+    name: kubernetes manifests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install kubeconform
+        run: |
+          curl -fsSL -o kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          tar xzf kubeconform.tar.gz kubeconform
+          sudo mv kubeconform /usr/local/bin/
+
+      - name: Render and validate
+        run: |
+          kubectl kustomize k8s/ > /tmp/rendered.yaml
+          kubeconform -strict -summary -kubernetes-version 1.30.0 /tmp/rendered.yaml
+          kubeconform -strict -summary -kubernetes-version 1.30.0 \
+            k8s/11-backend-secret.example.yaml
+
+      - name: Fail if a secret value was committed
+        run: |
+          if grep -rEn '(sk-ant-[A-Za-z0-9_-]{10,}|SERPER_API_KEY: *"[^"]+")' k8s/; then
+            echo "::error::A credential looks committed in k8s/"
+            exit 1
+          fi
+          echo "no committed credentials found"
