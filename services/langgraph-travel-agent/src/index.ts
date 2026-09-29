@@ -3,6 +3,7 @@ import type { Server } from "node:http";
 import { loadConfig } from "./config/env.js";
 import { createTravelGraph } from "./graph/buildGraph.js";
 import { createApp } from "./http/app.js";
+import { createAgentMemory } from "./memory/index.js";
 import { createFlightRepository } from "./repositories/index.js";
 import { AnthropicResponseGenerator } from "./services/AnthropicResponseGenerator.js";
 import { TemplateResponseGenerator } from "./services/ResponseGenerator.js";
@@ -49,15 +50,26 @@ async function main(): Promise<void> {
       })
     : new TemplateResponseGenerator();
 
-  const graph = createTravelGraph({
-    flights,
-    web,
-    responder,
-    logger,
-    now: () => new Date(),
+  // Short-term (checkpointer) + long-term (store) memory, shared by the graph
+  // and the HTTP session endpoints. In-process: see README before scaling out.
+  const memory = createAgentMemory({
+    sessionTtlMs: config.memory.sessionTtlMs,
+    maxSessions: config.memory.maxSessions,
   });
 
-  const app = createApp({ config, graph, flights, logger, version: VERSION });
+  const graph = createTravelGraph(
+    {
+      flights,
+      web,
+      responder,
+      logger,
+      now: () => new Date(),
+      memoryWindowTurns: config.memory.windowTurns,
+    },
+    memory,
+  );
+
+  const app = createApp({ config, graph, flights, logger, memory, version: VERSION });
   const server: Server = app.listen(config.port, () => {
     logger.info("listening", { port: config.port });
   });

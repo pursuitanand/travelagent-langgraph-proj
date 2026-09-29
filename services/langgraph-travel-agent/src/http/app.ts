@@ -10,6 +10,8 @@ import { z } from "zod";
 import type { AppConfig } from "../config/env.js";
 import type { TravelGraph } from "../graph/buildGraph.js";
 import { runTravelAgent } from "../graph/buildGraph.js";
+import type { TravelState } from "../graph/state.js";
+import type { AgentMemory } from "../memory/index.js";
 import type { FlightRepository } from "../repositories/FlightRepository.js";
 import { HttpError } from "../util/errors.js";
 import type { Logger } from "../util/logger.js";
@@ -19,12 +21,18 @@ export interface AppOptions {
   graph: TravelGraph;
   flights: FlightRepository;
   logger: Logger;
+  /** Must be the same instances the graph was compiled with. */
+  memory: Pick<AgentMemory, "sessions" | "profiles">;
   version?: string;
 }
 
+/** Ids become LangGraph thread ids and store namespaces - keep them boring. */
+const idSchema = z.string().trim().regex(/^[A-Za-z0-9_.:-]{1,128}$/, "must be 1-128 of [A-Za-z0-9_.:-]");
+
 const chatRequestSchema = z.object({
   message: z.string().trim().min(1, "message must not be empty").max(2000),
-  conversationId: z.string().trim().max(128).optional(),
+  conversationId: idSchema.optional(),
+  userId: idSchema.optional(),
   history: z
     .array(
       z.object({
@@ -37,7 +45,7 @@ const chatRequestSchema = z.object({
 });
 
 export function createApp(options: AppOptions): Application {
-  const { config, graph, flights, logger } = options;
+  const { config, graph, flights, logger, memory } = options;
   const app = express();
   const startedAt = Date.now();
   const version = options.version ?? "1.0.0";
@@ -113,20 +121,26 @@ export function createApp(options: AppOptions): Application {
       return;
     }
 
-    const { message, history, conversationId } = parsed.data;
+    const { message, history, conversationId, userId } = parsed.data;
     const startedNs = process.hrtime.bigint();
+    // The conversation id IS the LangGraph thread id: one session, one memory.
+    const sessionId = conversationId ?? randomUUID();
 
     try {
+      await memory.sessions.begin(sessionId, userId ?? null);
       const state = await runTravelAgent(graph, {
         message,
+        threadId: sessionId,
+        ...(userId ? { userId } : {}),
         ...(history ? { history } : {}),
       });
+      const session = memory.sessions.complete(sessionId);
 
       const durationMs = Math.round(Number(process.hrtime.bigint() - startedNs) / 1e6);
       const intent = state.intent;
 
       res.json({
-        conversationId: conversationId ?? randomUUID(),
+        conversationId: sessionId,
         reply: state.reply,
         intent: intent
           ? {
@@ -156,10 +170,75 @@ export function createApp(options: AppOptions): Application {
           notes: state.brief?.notes ?? [],
           errors: state.errors,
           durationMs,
+          memory: {
+            source: state.memorySource,
+            turn: session?.turns ?? null,
+            profile: state.profile,
+          },
         },
       });
     } catch (error) {
       next(error);
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // Sessions (short-term memory) and user profiles (long-term memory).
+  // Inspecting and forgetting memory is part of operating it responsibly.
+  // -------------------------------------------------------------------------
+  app.get("/api/sessions/:id", async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const id = idSchema.parse(req.params.id);
+      const session = memory.sessions.get(id);
+      if (!session) {
+        res.status(404).json({ error: "session_not_found" });
+        return;
+      }
+      const snapshot = await graph.getState({ configurable: { thread_id: id } });
+      const values = snapshot.values as Partial<TravelState>;
+      res.json({
+        session,
+        memory: {
+          messages: values.messages ?? [],
+          lastIntent: values.lastIntent ?? null,
+        },
+      });
+    } catch (error) {
+      next(error instanceof z.ZodError ? new HttpError(400, "Invalid session id") : error);
+    }
+  });
+
+  app.delete("/api/sessions/:id", async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const id = idSchema.parse(req.params.id);
+      await memory.sessions.delete(id);
+      res.status(204).end();
+    } catch (error) {
+      next(error instanceof z.ZodError ? new HttpError(400, "Invalid session id") : error);
+    }
+  });
+
+  app.get("/api/users/:userId/profile", async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const userId = idSchema.parse(req.params.userId);
+      const profile = await memory.profiles.load(userId);
+      if (!profile) {
+        res.status(404).json({ error: "profile_not_found" });
+        return;
+      }
+      res.json({ userId, profile });
+    } catch (error) {
+      next(error instanceof z.ZodError ? new HttpError(400, "Invalid user id") : error);
+    }
+  });
+
+  app.delete("/api/users/:userId/profile", async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const userId = idSchema.parse(req.params.userId);
+      await memory.profiles.delete(userId);
+      res.status(204).end();
+    } catch (error) {
+      next(error instanceof z.ZodError ? new HttpError(400, "Invalid user id") : error);
     }
   });
 

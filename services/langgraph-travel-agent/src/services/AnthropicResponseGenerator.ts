@@ -32,6 +32,9 @@ Rules:
 - Keep prices, times, airlines and flight numbers exactly as given.
 - When web research is present, weave in one or two useful facts and link the
   source inline as a markdown link.
+- "What we remember about this traveller" is background from earlier sessions.
+  Use it to personalise (e.g. mention their usual cabin) but never let it
+  override what the traveller asked for in this message.
 - If the brief has no flights, say so plainly and ask for the one detail that
   would unblock the search.
 - Format as short markdown: a sentence or two, then a compact bullet list.
@@ -81,7 +84,7 @@ export class AnthropicResponseGenerator implements ResponseGenerator {
         fallbacks: "default",
         messages: [
           ...toApiHistory(input.history),
-          { role: "user", content: renderBrief(input.brief) },
+          { role: "user", content: renderBrief(input.brief, input.profile ?? null) },
         ],
       });
 

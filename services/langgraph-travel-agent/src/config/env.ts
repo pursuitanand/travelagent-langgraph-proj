@@ -46,6 +46,10 @@ const envSchema = z.object({
   ANTHROPIC_MAX_TOKENS: z.coerce.number().int().positive().default(8000),
   ANTHROPIC_EFFORT: z.enum(["low", "medium", "high", "xhigh", "max"]).default("low"),
   ANTHROPIC_TIMEOUT_MS: z.coerce.number().int().positive().default(45_000),
+
+  MEMORY_WINDOW_TURNS: z.coerce.number().int().min(1).max(50).default(10),
+  SESSION_TTL_MINUTES: z.coerce.number().int().positive().default(60),
+  SESSION_MAX: z.coerce.number().int().positive().default(1000),
 });
 
 export interface AppConfig {
@@ -88,6 +92,12 @@ export interface AppConfig {
     effort: "low" | "medium" | "high" | "xhigh" | "max";
     timeoutMs: number;
     enabled: boolean;
+  };
+  memory: {
+    /** User + assistant pairs kept in short-term memory per session. */
+    windowTurns: number;
+    sessionTtlMs: number;
+    maxSessions: number;
   };
 }
 
@@ -168,6 +178,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       effort: e.ANTHROPIC_EFFORT,
       timeoutMs: e.ANTHROPIC_TIMEOUT_MS,
       enabled: e.ANTHROPIC_API_KEY.trim().length > 0,
+    },
+    memory: {
+      windowTurns: e.MEMORY_WINDOW_TURNS,
+      sessionTtlMs: e.SESSION_TTL_MINUTES * 60_000,
+      maxSessions: e.SESSION_MAX,
     },
   };
 }

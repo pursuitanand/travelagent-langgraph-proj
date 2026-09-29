@@ -18,10 +18,38 @@ const sendEl = document.getElementById("send");
 const statusDot = document.getElementById("status-dot");
 const statusText = document.getElementById("status-text");
 
-/** Rolling conversation, sent back so the agent can resolve follow-ups. */
+/**
+ * Rolling conversation. The agent keeps its own server-side memory per
+ * conversationId; this copy is only used to re-seed it if that memory is gone
+ * (pod restart, another replica, session expiry).
+ */
 const history = [];
 let conversationId = null;
 let busy = false;
+
+/**
+ * Stable, anonymous id for this browser so the agent can keep a long-term
+ * travel profile (usual airport, cabin). Not a login - clearing site data
+ * resets it.
+ */
+const userId = loadUserId();
+
+function loadUserId() {
+  const key = "travel-agent-user-id";
+  try {
+    let id = localStorage.getItem(key);
+    if (!id) {
+      // crypto.randomUUID needs a secure context; plain-http LoadBalancer IPs are not.
+      const random = globalThis.crypto?.randomUUID?.() ??
+        `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+      id = `u-${random}`;
+      localStorage.setItem(key, id);
+    }
+    return id;
+  } catch {
+    return null; // storage blocked: the agent simply runs without long-term memory
+  }
+}
 
 function appendMessage(role, innerHtml, extraClass = "") {
   const wrapper = document.createElement("div");
@@ -70,6 +98,7 @@ async function sendMessage(message) {
         message,
         history: history.slice(-10),
         ...(conversationId ? { conversationId } : {}),
+        ...(userId ? { userId } : {}),
       }),
     });
 

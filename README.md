@@ -19,6 +19,7 @@ Every external provider is an opt-in upgrade, not a prerequisite.
 - [Architecture](#architecture)
 - [Quick start](#quick-start)
 - [How the agent works](#how-the-agent-works)
+- [Context engineering](#context-engineering) — typed state, multiple schemas, memory, sessions
 - [API reference](#api-reference)
 - [Configuration reference](#configuration-reference)
 - [Connecting real providers](#connecting-real-providers)
@@ -55,13 +56,17 @@ chat-assistant                              :3000    LoadBalancer / Ingress
 langgraph-travel-agent                      :8080    ClusterIP (internal only)
    |
    +-- LangGraph
-   |     parseRequest
+   |     loadMemory  <------------------------------+  checkpointer: session memory (thread_id)
+   |        |                                       |  store:        user profile   (user_id)
+   |     parseRequest                               |
    |        |-------> flightSearch ----> FlightRepository
    |        |                              JSON (default) | PostgreSQL | Duffel
    |        |-------> webSearch ------> SerperSearchService      -> serper.dev
-   |                     |
-   |                     v
+   |                     |                          |
+   |                     v                          |
    |               combineResults ----> generateResponse -> Claude / template
+   |                                        |       |
+   |                                    saveMemory -+
    |
    +-- GET /health  (readiness + liveness)
 ```
@@ -101,8 +106,9 @@ execution order, so you can see this from outside the process.
         └── src/
             ├── config/env.ts          validated, typed configuration
             ├── domain/                types, airports, intentParser
-            ├── graph/                 state.ts, buildGraph.ts, nodes/
+            ├── graph/                 state.ts (schemas), buildGraph.ts, nodes/
             ├── http/app.ts            routes, validation, error handling
+            ├── memory/                sessions, user profiles, checkpointer + store
             ├── repositories/          FlightRepository + JSON / Postgres / Duffel
             └── services/              Serper, Claude, template responder
 ```
@@ -171,17 +177,267 @@ Tear down: `kubectl delete -k k8s/`.
 
 | Node | Responsibility |
 | --- | --- |
-| `parseRequest` | Free text → typed `TravelIntent` (route, dates, passengers, cabin, budget, research topics). **Rule-based and deterministic — no LLM call**, so flight search needs no API key, adds no latency and is fully unit-testable. Follow-ups such as *"what about business class?"* inherit the route from the previous turn. |
+| `loadMemory` | Assembles this turn's context: clears the turn-scoped channels, reconciles the session's checkpointed memory with the client transcript, and loads the user's long-term profile. See [Context engineering](#context-engineering). |
+| `parseRequest` | Free text → typed `TravelIntent` (route, dates, passengers, cabin, budget, research topics). **Rule-based and deterministic — no LLM call**, so flight search needs no API key, adds no latency and is fully unit-testable. Follow-ups such as *"what about business class?"* inherit the route from the previous turn's remembered intent; a missing departure city defaults to the user's usual airport. |
 | `flightSearch` | Queries `FlightRepository` for the outbound leg, plus the reverse route when a return date was parsed. Falls back to nearby dates and says so in the reply. |
 | `webSearch` | Builds a destination-focused query from the parsed topics and calls Serper. |
 | `combineResults` | The join point. Computes cheapest / fastest / price range and assembles the `TravelBrief`. |
-| `generateResponse` | Hands the brief to the LLM to write the traveller-facing reply. |
+| `generateResponse` | Hands the brief, the trimmed conversation window and the user profile to the LLM to write the traveller-facing reply. |
+| `saveMemory` | Writes the turn back: appends it to the session window (trimmed), remembers the intent, and updates the user's profile. |
 
 **Every branch degrades independently.** A repository error, a Serper timeout,
 a missing key, an LLM refusal or an API outage is recorded in
 `diagnostics.errors`, and the agent still answers with whatever else it
 gathered. State channels written by both parallel nodes (`notes`, `errors`,
-`trace`) use append reducers so neither branch clobbers the other.
+`trace`) use append reducers so neither branch clobbers the other. Memory is
+treated the same way: failing to read or write a profile is logged, never fatal.
+
+---
+
+## Context engineering
+
+*Context engineering* is deciding **what information each step of the agent —
+and the LLM in particular — gets to see, where that information lives, and how
+long it lives**. Prompt wording matters less than getting the right facts, and
+only the right facts, into the context window at the right time.
+
+It is usually described as four strategies, and this project uses all four:
+
+| Strategy | Meaning | Where it happens here |
+| --- | --- | --- |
+| **Write** | Save context outside the window so it can be used later | `saveMemory` → checkpointer (session) and store (profile) |
+| **Select** | Pull only the relevant stored context back in | `loadMemory`, `parseRequest` (`lastIntent`, `homeAirport`), node-scoped inputs |
+| **Compress** | Keep the context small | Trimmed message window, `renderBrief`, `lastIntent` instead of re-reading the transcript |
+| **Isolate** | Keep contexts apart | Input/output/private schemas, per-thread and per-user namespaces, parallel branches that cannot see each other |
+
+### Context engineering concepts used in this project
+
+| # | Concept | What it means here | Code |
+| --- | --- | --- | --- |
+| 1 | **Typed state (the TypeScript `TypedDict`)** | Graph state is a dictionary with a fixed, typed set of keys, inferred from `Annotation.Root` | `src/graph/state.ts` |
+| 2 | **Multiple schemas** | Separate *input*, *output* and *overall* schemas, plus a narrower *node-scoped input* for the search branches | `TravelInputAnnotation`, `TravelOutputAnnotation`, `TravelStateAnnotation`, `SearchInputAnnotation` |
+| 3 | **Private state channels** | Working memory (`messages`, `lastIntent`, `webAnswer`) exists inside the graph but is never returned to callers | `TravelStateAnnotation` |
+| 4 | **Reducers** | Each channel declares how updates merge: overwrite, append, or append-or-replace | `lastValue`, `appendOrReplace` in `state.ts` |
+| 5 | **Turn-scoped vs persistent channels** | `notes`/`errors`/`trace` describe one turn and are reset; `messages`/`lastIntent` persist across turns | `loadMemory` |
+| 6 | **Short-term memory** | The conversation window, checkpointed per LangGraph `thread_id` by a `MemorySaver` checkpointer | `createAgentMemory`, `graph.compile({ checkpointer })` |
+| 7 | **Sessions** | `conversationId` *is* the `thread_id`; a registry tracks turns, idle TTL and a size cap, and deletes expired threads | `src/memory/sessions.ts` |
+| 8 | **Long-term memory** | A per-user travel profile that survives across sessions, in a LangGraph `InMemoryStore` | `src/memory/profile.ts`, `graph.compile({ store })` |
+| 9 | **Namespacing** | Profiles live under `["users", <userId>]`, so one user's memory can never enter another's context | `ProfileStore.namespace` |
+| 10 | **Typed memory records + runtime validation** | `UserProfile` is a `TypedDict`-style interface; a zod twin validates anything read back from the store | `userProfileSchema` |
+| 11 | **Memory write policy** | Only complete searches update the profile; recent destinations are de-duplicated and capped at five | `learnFromIntent` |
+| 12 | **Context window trimming** | Sessions keep the last `MEMORY_WINDOW_TURNS` user/assistant pairs; the LLM call sends at most the last 6 messages | `saveMemory`, `toApiHistory` |
+| 13 | **Structured memory over raw transcript** | Follow-ups reuse the previous turn's typed `TravelIntent` instead of re-parsing old text | `lastIntent`, `parseRequest` |
+| 14 | **Context rehydration / reconciliation** | If server memory is missing or stale, it is re-seeded from the client's transcript | `loadMemory` (`memorySource`) |
+| 15 | **Context isolation for sub-tasks** | `flightSearch` and `webSearch` receive only `intent` — no transcript, no profile, no each-other | `addNode(..., { input: SearchInputAnnotation })` |
+| 16 | **Context compression for the LLM** | Raw offers and search hits are distilled into a `TravelBrief`, then rendered as a compact markdown brief | `combineResults`, `renderBrief` |
+| 17 | **Layered context priority** | Current message › session memory › long-term profile; the system prompt tells the model the profile is background only | `parseRequest`, `SYSTEM_PROMPT` |
+| 18 | **Run configuration vs state** | Identity (`thread_id`, `user_id`) travels in `config.configurable`, not in state; collaborators travel in `AgentDependencies` | `runTravelAgent`, `TravelRunConfigurable` |
+| 19 | **Memory observability and forgetting** | Each reply reports where its context came from; sessions and profiles can be inspected and deleted over HTTP | `diagnostics.memory`, `/api/sessions/:id`, `/api/users/:userId/profile` |
+
+The rest of this section explains each group.
+
+### Typed state — the TypeScript equivalent of `TypedDict`
+
+In Python LangGraph, state is usually a `TypedDict`:
+
+```python
+class TravelState(TypedDict):
+    message: str
+    intent: TravelIntent | None
+    notes: Annotated[list[str], operator.add]
+```
+
+LangGraph.js expresses the same thing with `Annotation.Root`. Each key is a
+*channel* with a type, a default and a reducer, and TypeScript infers a plain
+typed dictionary from it:
+
+```ts
+export const TravelOutputAnnotation = Annotation.Root({
+  intent: lastValue<TravelIntent | null>(() => null),   // overwrite
+  notes:  appendOrReplace<string>(),                    // append (like operator.add)
+  // …
+});
+
+export type TravelOutput = typeof TravelOutputAnnotation.State;
+// => { intent: TravelIntent | null; notes: string[]; … }
+```
+
+The same `TypedDict` idea is used for data that lives *outside* the graph:
+`UserProfile` is a plain interface with a fixed set of JSON-serialisable keys.
+Because the store hands back `Record<string, any>`, a zod schema validates the
+record on the way in — a corrupt or out-of-date profile is ignored rather than
+fed to the model.
+
+### Multiple schemas
+
+One graph, four schemas, each answering a different question:
+
+```text
+             TravelInputAnnotation           what may a caller send?
+             { message, history }
+                     │
+                     ▼
+ ┌──────────────── TravelStateAnnotation ─────────────────┐   what does the graph work with?
+ │  input keys + output keys + private working memory:    │
+ │  messages, lastIntent, webAnswer                       │
+ │                                                        │
+ │   SearchInputAnnotation { intent }                     │   what may one node see?
+ │   → flightSearch, webSearch                            │
+ └────────────────────────────────────────────────────────┘
+                     │
+                     ▼
+             TravelOutputAnnotation          what does invoke() return?
+             { reply, intent, outboundOffers, inboundOffers,
+               webResults, brief, profile, memorySource,
+               notes, errors, trace }
+```
+
+```ts
+new StateGraph({
+  stateSchema: TravelStateAnnotation,
+  input: TravelInputAnnotation,
+  output: TravelOutputAnnotation,
+})
+  .addNode("flightSearch", createFlightSearchNode(deps), { input: SearchInputAnnotation })
+  .addNode("webSearch",    createWebSearchNode(deps),    { input: SearchInputAnnotation })
+```
+
+Why it matters for context:
+
+- **The input schema** is a contract: a caller cannot inject `lastIntent` or
+  `messages` and so cannot rewrite the agent's memory.
+- **The output schema** keeps working memory private. The transcript window
+  and raw web answer stay inside the graph; a test asserts they never appear
+  in the result.
+- **The node-scoped input** makes each search branch's context explicit and
+  minimal. The web query cannot be skewed by the transcript and the two
+  parallel branches cannot depend on each other.
+
+### Reducers, and turn-scoped vs persistent channels
+
+| Channel | Reducer | Lifetime | Written by |
+| --- | --- | --- | --- |
+| `message`, `history` | overwrite | this turn (input) | caller |
+| `intent`, `outboundOffers`, `inboundOffers`, `webResults`, `webAnswer`, `brief`, `reply`, `responder` | overwrite | this turn | one node each |
+| `notes`, `errors`, `trace` | append, or `{ replace }` | **this turn** — reset by `loadMemory` | several nodes, incl. both parallel branches |
+| `profile`, `memorySource` | overwrite | this turn (a view of memory) | `loadMemory`, `saveMemory` |
+| `messages` | append, or `{ replace }` | **whole session** (checkpointed) | `loadMemory` (re-seed), `saveMemory` (append + trim) |
+| `lastIntent` | overwrite | **whole session** (checkpointed) | `saveMemory` |
+
+A checkpointer restores **every** channel when a thread resumes. That is what
+gives the agent memory, but it also means last turn's `trace` would keep
+growing forever. The `appendOrReplace` reducer solves both needs with one rule —
+an array appends, `{ replace: [...] }` overwrites:
+
+```ts
+// loadMemory — the first node of every turn
+return {
+  notes:  { replace: [] },
+  errors: { replace: [] },
+  trace:  { replace: ["loadMemory"] },
+  // …
+};
+```
+
+### Memory: two tiers
+
+```text
+                   ┌─────────────────────────────────────────────┐
+  conversationId ─►│ SHORT-TERM  checkpointer (MemorySaver)       │  one per session
+  = thread_id      │  messages     last N user/assistant pairs    │  expires after
+                   │  lastIntent   previous turn's TravelIntent   │  SESSION_TTL_MINUTES
+                   └─────────────────────────────────────────────┘
+                   ┌─────────────────────────────────────────────┐
+  userId ─────────►│ LONG-TERM   store (InMemoryStore)            │  one per user
+  = user_id        │  ["users", userId] / "travel-profile"        │  across all sessions
+                   │  homeAirport, preferredCabin,                │
+                   │  typicalPassengers, recentDestinations       │
+                   └─────────────────────────────────────────────┘
+```
+
+Both are created together by `createAgentMemory()` and passed to
+`graph.compile({ checkpointer, store })` and to the HTTP layer, so the graph
+and the session endpoints always share the same instances. Nodes reach the
+store through `config.store` and read identity from `config.configurable`:
+
+```ts
+await graph.invoke(
+  { message, history },
+  { configurable: { thread_id: sessionId, user_id: userId } },
+);
+```
+
+**How each tier changes the answer**
+
+| Turn | Request | What memory contributes |
+| --- | --- | --- |
+| 1 (session A) | *"London to Tokyo on 20 October in business"* | nothing yet; `saveMemory` records the turn and learns `homeAirport = LHR`, `preferredCabin = business` |
+| 2 (session A) | *"what about premium economy?"* | **short-term**: `lastIntent` supplies the route and date; only the cabin changes |
+| 3 (session B, same user) | *"flights to Tokyo on 22 October"* | **long-term**: no departure city given, so the profile's `LHR` is used and the reply says *"Assumed departure from your usual airport, London (LHR)."* |
+
+The LLM also sees the profile as a separate *"What we remember about this
+traveller"* section of the brief, and the system prompt instructs it to treat
+that as background that never overrides the current request.
+
+### Sessions
+
+`conversationId` from the request **is** the LangGraph `thread_id`. The
+`SessionRegistry` adds what a checkpointer does not have on its own:
+
+- **Turn counting** — reported as `diagnostics.memory.turn`.
+- **Idle expiry** — a session unused for `SESSION_TTL_MINUTES` is removed and
+  its checkpoints deleted with `checkpointer.deleteThread()`.
+- **A size cap** — beyond `SESSION_MAX`, the least recently active session is
+  evicted. Without this an in-memory checkpointer grows without bound.
+
+Expiry is checked on each new turn, so no background timer is needed.
+
+The browser keeps `conversationId` for the life of the page and a stable,
+anonymous `userId` in `localStorage` (clearing site data resets it). It still
+sends its transcript, but only as a fallback — see below.
+
+### Rehydration: when server memory is missing or stale
+
+In-process memory disappears when a pod restarts, and with two backend
+replicas consecutive turns can land on different pods. `loadMemory` compares
+the last message in server memory with the last message the client sent:
+
+| Server memory | Client transcript | Result (`diagnostics.memory.source`) |
+| --- | --- | --- |
+| present, ends with the same message | any | `checkpoint` — server memory is used |
+| missing | present | `client-history` — memory re-seeded from the client |
+| present but different | present | `client-history` — stale memory replaced, `lastIntent` cleared |
+| missing | missing | `empty` — first turn |
+
+### Inspecting and forgetting memory
+
+```bash
+curl localhost:8080/api/sessions/<conversationId>           # window + lastIntent
+curl -X DELETE localhost:8080/api/sessions/<conversationId>
+curl localhost:8080/api/users/<userId>/profile
+curl -X DELETE localhost:8080/api/users/<userId>/profile
+```
+
+These endpoints are on the backend only. `chat-assistant` proxies just
+`/api/chat`, so they are not reachable from the browser.
+
+### Making memory durable
+
+The default checkpointer and store live in the pod's memory: fine for one
+replica and for demos, lost on restart. `createAgentMemory()` accepts any
+LangGraph `BaseCheckpointSaver` and `BaseStore`, so moving to Postgres is a
+wiring change in `src/index.ts`, not a graph change. For example, with
+`@langchain/langgraph-checkpoint-postgres` (not a dependency of this project
+and not tested here — check its current API):
+
+```ts
+const checkpointer = PostgresSaver.fromConnString(config.database.url);
+await checkpointer.setup();
+const memory = createAgentMemory({ checkpointer, store: /* a durable BaseStore */ });
+```
+
+Until then, with `replicas: 2`, session memory repairs itself from the client
+transcript, but a user's profile only exists on the replica that learned it.
 
 ---
 
@@ -193,6 +449,13 @@ gathered. State channels written by both parallel nodes (`notes`, `errors`,
 | --- | --- |
 | `POST /api/chat` | Run one pass of the agent |
 | `GET /health` | Readiness + liveness. Returns **503** when the flight repository is unhealthy |
+| `GET /api/sessions/:id` | A session's short-term memory: turn count, message window, `lastIntent`. 404 when unknown or expired |
+| `DELETE /api/sessions/:id` | Forget a session and delete its checkpoints (204) |
+| `GET /api/users/:userId/profile` | A user's long-term profile. 404 when none exists |
+| `DELETE /api/users/:userId/profile` | Forget a user's profile (204) |
+
+`conversationId` and `userId` must match `[A-Za-z0-9_.:-]{1,128}`, since they
+become LangGraph thread ids and store namespaces.
 
 <details>
 <summary><code>POST /api/chat</code> request and response</summary>
@@ -201,7 +464,9 @@ gathered. State channels written by both parallel nodes (`notes`, `errors`,
 // request
 {
   "message": "London to Tokyo on 20 October for 2 people in business class",
-  "conversationId": "optional-client-supplied-id",
+  "conversationId": "optional; reuse it to continue a session (= thread_id)",
+  "userId": "optional; enables the long-term profile (= store namespace)",
+  // optional; only used to re-seed server memory when it is missing or stale
   "history": [{ "role": "user", "content": "an earlier turn" }]
 }
 ```
@@ -225,11 +490,17 @@ gathered. State channels written by both parallel nodes (`notes`, `errors`,
   "flights": { "outbound": [ /* Duffel-shaped offers */ ], "inbound": [] },
   "sources": [{ "title": "…", "link": "https://…", "source": "example.com" }],
   "diagnostics": {
-    "trace": ["parseRequest", "flightSearch", "webSearch", "combineResults", "generateResponse"],
+    "trace": ["loadMemory", "parseRequest", "flightSearch", "webSearch",
+              "combineResults", "generateResponse", "saveMemory"],
     "responder": "anthropic:claude-opus-5",
     "notes": [],
     "errors": [],
-    "durationMs": 412
+    "durationMs": 412,
+    "memory": {
+      "source": "checkpoint",   // checkpoint | client-history | empty
+      "turn": 2,                // completed turns in this session
+      "profile": { "homeAirport": { "iata": "LHR", … }, "preferredCabin": "business", … }
+    }
   }
 }
 ```
@@ -277,6 +548,9 @@ See each service's `.env.example`.
 | `ANTHROPIC_MAX_TOKENS` | `8000` | |
 | `ANTHROPIC_EFFORT` | `low` | `low` \| `medium` \| `high` \| `xhigh` \| `max` |
 | `ANTHROPIC_TIMEOUT_MS` | `45000` | |
+| `MEMORY_WINDOW_TURNS` | `10` | User/assistant pairs kept per session (1–50) — see [context engineering](#context-engineering) |
+| `SESSION_TTL_MINUTES` | `60` | Idle time before a session and its checkpoints are deleted |
+| `SESSION_MAX` | `1000` | Live-session cap; the least recently active is evicted beyond it |
 
 ### `chat-assistant`
 
@@ -869,10 +1143,16 @@ Environment with required reviewers.
   capabilities dropped, `allowPrivilegeEscalation: false` and the
   `RuntimeDefault` seccomp profile.
 - **Input is validated** with zod at the HTTP boundary, with a 32 kB body cap.
+  Session and user ids are restricted to a safe character set.
+- **Memory is namespaced and schema-bound.** Profiles are keyed by user, the
+  graph's input schema stops callers writing private memory channels, and a
+  stored profile that fails validation is ignored.
 
 Still to do for a real deployment: authentication and per-user rate limiting on
 `/api/chat` (there is none — the endpoint is open, and it spends money on LLM
-and search calls), a NetworkPolicy restricting backend ingress to the frontend
+and search calls). The same applies to the memory endpoints: `userId` is an
+anonymous browser id, not an authenticated identity, so anyone who learns one
+can read or delete that profile. Then add a NetworkPolicy restricting backend ingress to the frontend
 pods, and the [TLS fix](#tls-to-a-managed-database) if you use Postgres.
 
 ---
@@ -880,7 +1160,7 @@ pods, and the [TLS fix](#tls-to-a-managed-database) if you use Postgres.
 ## Testing
 
 ```bash
-cd services/langgraph-travel-agent && npm test    # 109 tests
+cd services/langgraph-travel-agent && npm test    # 129 tests
 cd services/chat-assistant        && npm test    # 31 tests
 ```
 
@@ -894,7 +1174,8 @@ cd services/chat-assistant        && npm test    # 31 tests
 | `duffelFlightRepository.test.ts` | Request headers and body, cheapest-first ordering, price/limit filters, expired-offer removal, capped date flexibility, typed errors, token redaction, health-probe caching, airport paging |
 | `serperSearchService.test.ts` | Request shape, response mapping, HTTP errors, timeouts, disabled mode |
 | `travelGraph.test.ts` | Node execution order, parallel branches, single join, per-branch failure isolation, multi-turn state, cheapest/fastest selection |
-| `api.test.ts` | `/health` 200/503, `/api/chat` happy path, validation errors, correlation ids, degraded behaviour |
+| `memory.test.ts` | Checkpointed follow-ups, thread isolation, turn-scoped resets, window trimming, stale-memory repair, output-schema privacy, input-schema injection, node-scoped inputs, profile learning and per-user isolation, corrupt-record rejection, session TTL and eviction |
+| `api.test.ts` | `/health` 200/503, `/api/chat` happy path, validation errors, correlation ids, degraded behaviour, session and profile endpoints |
 | `server.test.ts` (frontend) | Config validation, proxy target and headers, 502/504 handling, static assets, no-key-leak assertion |
 | `render.test.ts` (frontend) | Markdown rendering, flight cards, source chips, and the escape-then-format rule |
 
@@ -934,9 +1215,14 @@ so the suites are fast, deterministic and need no network or API keys.
   on the mapping the first time you point it at `api.duffel.com`.
 - **`/api/chat` is unauthenticated and unthrottled.** Fine for a local demo,
   not for anything public.
-- **Conversation state lives in the browser** and is echoed back on each
-  request. There is no server-side session store, so history is capped and
-  lost on refresh.
+- **Agent memory is in-process.** Sessions (checkpointer) and profiles (store)
+  live in the backend pod's memory and are lost on restart. With more than one
+  replica, session memory self-repairs from the client transcript, but a
+  profile exists only on the replica that learned it. Plug in a durable
+  checkpointer and store before relying on memory — see
+  [Making memory durable](#making-memory-durable).
+- **The UI starts a new session on page load.** `conversationId` is kept only
+  for the life of the page; the anonymous `userId` persists in `localStorage`.
 - **`parseRequest` understands the 16 airports** in `src/domain/airports.ts`.
   Add a city there and regenerate the dataset to widen coverage. It is
   English-only and rule-based — robust and free, but it will not handle phrasing

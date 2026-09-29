@@ -1,4 +1,5 @@
 import type { ChatTurn, FlightOffer, TravelBrief } from "../domain/types.js";
+import type { UserProfile } from "../memory/profile.js";
 import {
   daysBetweenIsoDates,
   formatDuration,
@@ -8,7 +9,10 @@ import {
 
 export interface GenerateInput {
   brief: TravelBrief;
+  /** Prior turns from short-term memory, oldest first (current turn excluded). */
   history: ChatTurn[];
+  /** Long-term memory about this traveller, when a user id was supplied. */
+  profile?: UserProfile | null;
 }
 
 export interface GenerateOutput {
@@ -58,7 +62,7 @@ export function describeOffer(offer: FlightOffer): string {
 }
 
 /** Compact, LLM-friendly rendering of everything the agent gathered. */
-export function renderBrief(brief: TravelBrief): string {
+export function renderBrief(brief: TravelBrief, profile: UserProfile | null = null): string {
   const { intent } = brief;
   const lines: string[] = [];
 
@@ -98,6 +102,18 @@ export function renderBrief(brief: TravelBrief): string {
     if (brief.webAnswer) lines.push(`Summary box: ${brief.webAnswer}`);
     for (const result of brief.webResults) {
       lines.push(`- [${result.title}](${result.link}) - ${result.snippet}`);
+    }
+  }
+
+  if (profile && profile.searchesObserved > 0) {
+    lines.push("", "## What we remember about this traveller");
+    if (profile.homeAirport) {
+      lines.push(`- Usually departs from: ${profile.homeAirport.city} (${profile.homeAirport.iata})`);
+    }
+    if (profile.preferredCabin) lines.push(`- Preferred cabin: ${profile.preferredCabin.replace("_", " ")}`);
+    if (profile.typicalPassengers) lines.push(`- Usual party size: ${profile.typicalPassengers}`);
+    if (profile.recentDestinations.length > 0) {
+      lines.push(`- Recent destinations: ${profile.recentDestinations.join(", ")}`);
     }
   }
 

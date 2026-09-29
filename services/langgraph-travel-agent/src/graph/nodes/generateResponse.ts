@@ -19,7 +19,9 @@ export function createGenerateResponseNode(deps: AgentDependencies) {
     try {
       const result = await deps.responder.generate({
         brief: state.brief,
-        history: state.history,
+        // Short-term memory (the trimmed window) and long-term memory (profile).
+        history: state.messages,
+        profile: state.profile,
       });
       return {
         reply: result.text,

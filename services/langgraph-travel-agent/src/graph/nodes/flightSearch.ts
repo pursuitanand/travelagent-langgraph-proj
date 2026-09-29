@@ -1,7 +1,7 @@
 import type { FlightSearchQuery } from "../../domain/types.js";
 import { DEFAULT_SEARCH_LIMIT } from "../../repositories/FlightRepository.js";
 import { toErrorMessage } from "../../util/errors.js";
-import type { AgentDependencies, TravelState, TravelStateUpdate } from "../state.js";
+import type { AgentDependencies, SearchInput, TravelStateUpdate } from "../state.js";
 
 /**
  * Queries the `FlightRepository` for the outbound leg and, when a return date
@@ -9,9 +9,12 @@ import type { AgentDependencies, TravelState, TravelStateUpdate } from "../state
  *
  * A repository failure degrades this branch only - it is recorded in
  * `errors` and the agent still answers with whatever else it found.
+ *
+ * Receives only `SearchInput` (the parsed intent): it cannot see the
+ * transcript, the user profile or the web branch.
  */
 export function createFlightSearchNode(deps: AgentDependencies) {
-  return async function flightSearch(state: TravelState): Promise<TravelStateUpdate> {
+  return async function flightSearch(state: SearchInput): Promise<TravelStateUpdate> {
     const intent = state.intent;
     if (!intent?.searchable || !intent.origin || !intent.destination) {
       return {

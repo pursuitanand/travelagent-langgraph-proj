@@ -30,11 +30,13 @@ describe("travel agent graph", () => {
     });
 
     expect(state.trace).toEqual([
+      "loadMemory",
       "parseRequest",
       "flightSearch",
       "webSearch",
       "combineResults",
       "generateResponse",
+      "saveMemory",
     ]);
     expect(state.intent?.origin?.iata).toBe("LHR");
     expect(state.intent?.destination?.iata).toBe("NRT");

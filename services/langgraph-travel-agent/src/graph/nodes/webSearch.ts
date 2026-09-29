@@ -1,6 +1,6 @@
 import type { TravelIntent } from "../../domain/types.js";
 import { toErrorMessage } from "../../util/errors.js";
-import type { AgentDependencies, TravelState, TravelStateUpdate } from "../state.js";
+import type { AgentDependencies, SearchInput, TravelStateUpdate } from "../state.js";
 
 /** Turns the parsed intent into one good Serper query. */
 export function buildSearchQuery(intent: TravelIntent): string {
@@ -31,10 +31,11 @@ function monthYearOf(isoDate: string): string {
 /**
  * Enriches the answer with live web context via Serper. Runs in parallel with
  * `flightSearch` and is always optional: no API key, a timeout or a provider
- * error degrades this branch only.
+ * error degrades this branch only. Like `flightSearch`, it receives only the
+ * parsed intent (`SearchInput`).
  */
 export function createWebSearchNode(deps: AgentDependencies) {
-  return async function webSearch(state: TravelState): Promise<TravelStateUpdate> {
+  return async function webSearch(state: SearchInput): Promise<TravelStateUpdate> {
     const intent = state.intent;
     if (!intent) {
       return { webResults: [], webAnswer: null, trace: ["webSearch:skipped"] };

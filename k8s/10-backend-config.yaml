@@ -40,3 +40,11 @@ data:
   ANTHROPIC_MAX_TOKENS: "8000"
   ANTHROPIC_EFFORT: "low"
   ANTHROPIC_TIMEOUT_MS: "45000"
+
+  # Context engineering: session (short-term) and profile (long-term) memory.
+  # Both live in the pod's process memory. With replicas > 1, short-term memory
+  # self-repairs from the client transcript, but profiles are per-replica until
+  # a durable checkpointer/store is configured (see README).
+  MEMORY_WINDOW_TURNS: "10"
+  SESSION_TTL_MINUTES: "60"
+  SESSION_MAX: "1000"

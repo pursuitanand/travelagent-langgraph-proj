@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config/env.js";
 import { createTravelGraph } from "../src/graph/buildGraph.js";
 import { createApp } from "../src/http/app.js";
+import { createAgentMemory } from "../src/memory/index.js";
 import { TemplateResponseGenerator } from "../src/services/ResponseGenerator.js";
 import { silentLogger } from "../src/util/logger.js";
 import { FakeFlightRepository, FakeWebSearchService, makeOffer } from "./helpers/fakes.js";
@@ -19,16 +20,20 @@ function buildHarness(options: { flightsFail?: boolean } = {}): Harness {
     ? new FakeFlightRepository({ failWith: new Error("db offline") })
     : new FakeFlightRepository({ offers: [makeOffer()] });
 
-  const graph = createTravelGraph({
-    flights,
-    web: new FakeWebSearchService(),
-    responder: new TemplateResponseGenerator(),
-    logger: silentLogger,
-    now: () => new Date("2026-09-25T10:00:00Z"),
-  });
+  const memory = createAgentMemory();
+  const graph = createTravelGraph(
+    {
+      flights,
+      web: new FakeWebSearchService(),
+      responder: new TemplateResponseGenerator(),
+      logger: silentLogger,
+      now: () => new Date("2026-09-25T10:00:00Z"),
+    },
+    memory,
+  );
 
   return {
-    app: createApp({ config, graph, flights, logger: silentLogger, version: "test" }),
+    app: createApp({ config, graph, flights, logger: silentLogger, memory, version: "test" }),
     flights,
   };
 }
@@ -151,6 +156,75 @@ describe("POST /api/chat", () => {
     const { app } = buildHarness();
     const response = await request(app).post("/api/chat").send({ message: "hello" }).expect(200);
     expect(response.headers["x-request-id"]).toBeTruthy();
+  });
+});
+
+describe("sessions and memory", () => {
+  it("remembers the route server-side when the same conversation id is reused", async () => {
+    const { app, flights } = buildHarness();
+    await request(app)
+      .post("/api/chat")
+      .send({ message: "London to Tokyo on 20 October", conversationId: "trip-1" })
+      .expect(200);
+
+    // No history sent: the follow-up is resolved from the checkpointed session.
+    const response = await request(app)
+      .post("/api/chat")
+      .send({ message: "what about business class?", conversationId: "trip-1" })
+      .expect(200);
+
+    expect(flights.queries[1]).toMatchObject({ origin: "LHR", cabinClass: "business" });
+    expect(response.body.diagnostics.memory).toMatchObject({ source: "checkpoint", turn: 2 });
+  });
+
+  it("exposes and deletes a session's short-term memory", async () => {
+    const { app } = buildHarness();
+    await request(app)
+      .post("/api/chat")
+      .send({ message: "London to Tokyo on 20 October", conversationId: "trip-2" })
+      .expect(200);
+
+    const inspected = await request(app).get("/api/sessions/trip-2").expect(200);
+    expect(inspected.body.session).toMatchObject({ id: "trip-2", turns: 1 });
+    expect(inspected.body.memory.messages).toHaveLength(2);
+    expect(inspected.body.memory.lastIntent.destination.iata).toBe("NRT");
+
+    await request(app).delete("/api/sessions/trip-2").expect(204);
+    await request(app).get("/api/sessions/trip-2").expect(404);
+  });
+
+  it("builds a user profile and applies it in a new session", async () => {
+    const { app, flights } = buildHarness();
+    await request(app)
+      .post("/api/chat")
+      .send({ message: "London to Tokyo on 20 October in business", userId: "user-1" })
+      .expect(200);
+
+    const response = await request(app)
+      .post("/api/chat")
+      .send({ message: "flights to Tokyo on 22 October", userId: "user-1" })
+      .expect(200);
+
+    expect(flights.queries[1]).toMatchObject({ origin: "LHR", destination: "NRT" });
+    expect(response.body.diagnostics.notes.join(" ")).toContain("usual airport");
+
+    const profile = await request(app).get("/api/users/user-1/profile").expect(200);
+    expect(profile.body.profile).toMatchObject({
+      preferredCabin: "business",
+      searchesObserved: 2,
+    });
+
+    await request(app).delete("/api/users/user-1/profile").expect(204);
+    await request(app).get("/api/users/user-1/profile").expect(404);
+  });
+
+  it("rejects ids that are unsafe as thread ids or namespaces", async () => {
+    const { app } = buildHarness();
+    await request(app)
+      .post("/api/chat")
+      .send({ message: "hi", conversationId: "../../etc" })
+      .expect(400);
+    await request(app).get("/api/users/bad%20id/profile").expect(400);
   });
 });
 
